@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.nifra.calendarbar</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Calendar Bar.app/Contents/MacOS/CalendarBar</string>
+	</array>
+	<!-- Start at login. The app is an agent (LSUIElement), so it only appears in the menu bar. -->
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Deliberately not KeepAlive: quitting from the "…" menu should stay quit until the
+	     next login, rather than being restarted immediately by launchd. -->
+	<key>KeepAlive</key>
+	<false/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+</dict>
+</plist>

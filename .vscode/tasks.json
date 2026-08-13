@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build (debug)",
+      "type": "shell",
+      "command": "swift build -c debug",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$swiftc"]
+    },
+    {
+      "label": "Build universal .app",
+      "type": "shell",
+      "command": "./build-app.sh",
+      "problemMatcher": ["$swiftc"]
+    },
+    {
+      "label": "Run app (build + launch)",
+      "type": "shell",
+      "command": "./build-app.sh debug --run",
+      "problemMatcher": ["$swiftc"]
+    },
+    {
+      "label": "Stop app",
+      "type": "shell",
+      "command": "pkill -f 'Contents/MacOS/CalendarBar' || true",
+      "problemMatcher": []
+    },
+    {
+      "label": "Preview UI (demo data, no sign-in)",
+      "type": "shell",
+      "command": "swift build -c debug && CALENDARBAR_DEMO=1 CALENDARBAR_EXPORT_PNG=\"$PWD/dist/preview.png\" .build/debug/CalendarBar && open dist/preview.png",
+      "problemMatcher": []
+    }
+  ]
+}
