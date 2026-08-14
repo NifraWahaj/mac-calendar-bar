@@ -28,11 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover = NSPopover()
         setUpStatusItem()
         setUpPopover()
-        store.start()
-
         // Diagnostics. Reading the Keychain requires a GUI session, so the file-based
         // form exists to be launched with:
-        //   open "dist/Calendar Bar.app" --args --diagnose /tmp/report.txt
+        //   open -n "/Applications/Calendar Bar.app" --args --diagnose /tmp/report.txt
+        //
+        // This runs *instead of* store.start(): starting the store would kick off its own
+        // refresh concurrently with the diagnostic one, and the two would double-count.
         let arguments = CommandLine.arguments
         let diagnoseFile = arguments.firstIndex(of: "--diagnose").flatMap { index in
             index + 1 < arguments.count ? arguments[index + 1] : nil
@@ -49,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             return
         }
+
+        store.start()
 
         if let path = DebugSnapshot.requestedPath {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [store] in

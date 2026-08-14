@@ -20,6 +20,11 @@ enum Theme {
     static var accent: Color { ThemeManager.shared.accentColor }
     static let fallbackEventHex = "3F51B5"
 
+    /// Approximates the fixed green Google's own clients use for `eventType: "birthday"`
+    /// events. Google sends no color field for these at all, so this is a guess at parity
+    /// with Google's UI, not a value read from the API.
+    static let birthdayHex = "0B8043"
+
     static let popoverBackground = dynamic(light: .white, dark: NSColor(hex: "1E1E1E"))
     static let sectionHeaderBackground = dynamic(light: NSColor(hex: "F5F5F5"),
                                                  dark: NSColor(hex: "2A2A2A"))

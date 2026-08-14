@@ -53,6 +53,7 @@ final class CalendarStore: ObservableObject {
 
     // Diagnostics only (see colorDiagnostics()).
     private var calendarDebugRows: [String] = []
+    private var eventDebugRows: [String] = []
     private var eventsWithOwnColor = 0
 
     init() {
@@ -149,13 +150,17 @@ final class CalendarStore: ObservableObject {
             calendarDebugRows = calendars.enumerated().map { index, entry in
                 let selected = entry.selected.map(String.init) ?? "absent"
                 let primary = entry.primary.map(String.init) ?? "absent"
-                return "  cal \(index + 1): selected=\(selected) primary=\(primary)"
-                    + " access=\(entry.accessRole ?? "nil")"
+                _ = index
+                return "  \"\(entry.summary ?? "(unnamed)")\""
                     + " bg=\(entry.backgroundColor ?? "absent")"
                     + " colorId=\(entry.colorId ?? "absent")"
-                    + " included=\(entry.isVisible)"
+                    + " selected=\(selected) primary=\(primary)"
+                    + " hidden=\(entry.hidden.map(String.init) ?? "absent")"
+                    + " access=\(entry.accessRole ?? "nil")"
+                    + " FETCHED=\(entry.isVisible ? "yes" : "no")"
             }
             eventsWithOwnColor = 0
+            eventDebugRows = []
             calendarColors = [:]
             calendarNames = [:]
             for entry in visible {
@@ -238,12 +243,41 @@ final class CalendarStore: ObservableObject {
             : start.addingTimeInterval(3600))
 
         // Per-event color wins over the calendar color, which is what preserves the
-        // custom colors people set on individual Google Calendar events.
-        let hex = GoogleColors.resolve(eventColorID: raw.colorId,
+        // custom colors people set on individual Google Calendar events. `colorId` is the
+        // documented classic palette; `eventLabelId` is the newer extended-swatch picker,
+        // which Google's API exposes as an opaque UUID with no resolving endpoint — see
+        // EventLabelColors for how those are learned. `eventType == "birthday"` never
+        // carries a color at all; Google's own clients hardcode that styling, so this does
+        // the same rather than showing every birthday in the calendar's default color.
+        let hex: String
+        if raw.colorId != nil {
+            hex = GoogleColors.resolve(eventColorID: raw.colorId,
                                        apiEventPalette: eventPalette,
                                        calendarHex: calendarColors[calendarID],
                                        fallback: Theme.fallbackEventHex)
-        if raw.colorId != nil { eventsWithOwnColor += 1 }
+        } else if let learned = EventLabelColors.resolve(raw.eventLabelId) {
+            hex = learned
+        } else if raw.eventType == "birthday" {
+            hex = Theme.birthdayHex
+        } else {
+            // calendarColors already stores modernized hex (see below).
+            hex = calendarColors[calendarID] ?? Theme.fallbackEventHex
+        }
+        if raw.colorId != nil || raw.eventLabelId != nil { eventsWithOwnColor += 1 }
+
+        if isDiagnosing {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MMM d"
+            let title = (raw.summary ?? "(none)").prefix(38)
+            eventDebugRows.append("  \(formatter.string(from: start))"
+                + " colorId=\(raw.colorId ?? "absent")"
+                + " eventLabelId=\(raw.eventLabelId ?? "absent")"
+                + " eventType=\(raw.eventType ?? "absent")"
+                + " hex=\(hex)"
+                + " allDay=\(isAllDay ? "y" : "n")"
+                + " cal=\(calendarNames[calendarID] ?? "?")"
+                + " | \(title)")
+        }
 
         let identifier = raw.id ?? raw.iCalUID ?? UUID().uuidString
         return CalEvent(
@@ -276,18 +310,64 @@ final class CalendarStore: ObservableObject {
         lines.append("events with their own colorId: \(eventsWithOwnColor)")
         lines.append("event palette from API: \(eventPalette.count) entries")
         lines.append("calendar palette from API: \(calendarPalette.count) entries")
+        lines.append("")
+        lines.append("per-event colors (as the agenda renders them):")
+        lines.append(contentsOf: eventDebugRows.sorted())
+        lines.append("")
         lines.append("events on the fallback hex: \(events.filter { $0.colorHex == Theme.fallbackEventHex }.count)")
         return lines.joined(separator: "\n")
     }
 
+    /// True while a `--diagnose` run is collecting the per-event table.
+    private var isDiagnosing = false
+
+    /// Diagnostics: full unfiltered JSON for the events named in CALENDARBAR_DUMP
+    /// (comma-separated title substrings). Proves what Google does and does not send.
+    private func rawEventDump() async -> String {
+        let needles = (ProcessInfo.processInfo.environment["CALENDARBAR_DUMP"]
+            ?? "Directed coursework,First Day of Classes,Happy birthday,Fee Payment")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        guard let calendarID = calendarColors.keys.first else { return "no calendar to dump" }
+        let (timeMin, timeMax) = fetchWindow()
+        do {
+            let data = try await api.fetchRawEventsBody(calendarID: calendarID,
+                                                        timeMin: timeMin, timeMax: timeMax)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let items = root["items"] as? [[String: Any]] else {
+                return "unexpected response shape"
+            }
+            var out: [String] = []
+            for item in items {
+                let summary = (item["summary"] as? String ?? "").lowercased()
+                guard needles.contains(where: { summary.contains($0) }) else { continue }
+                // Strip anything identifying before printing.
+                var redacted = item
+                for key in ["attendees", "creator", "organizer", "htmlLink", "iCalUID",
+                            "id", "recurringEventId", "description", "extendedProperties"] {
+                    redacted.removeValue(forKey: key)
+                }
+                let pretty = try JSONSerialization.data(withJSONObject: redacted,
+                                                        options: [.prettyPrinted, .sortedKeys])
+                out.append(String(decoding: pretty, as: UTF8.self))
+            }
+            return out.isEmpty ? "no matching events found" : out.joined(separator: "\n")
+        } catch {
+            return "raw dump failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Refresh, then report. Used only by the diagnostics flag.
     func runDiagnostics() async -> String {
+        isDiagnosing = true
+        defer { isDiagnosing = false }
         if let warning = auth.keychainWarning {
             return "keychain: \(warning)"
         }
         await performRefresh()
         if let error = errorMessage { return "error: \(error)" }
+        let dump = await rawEventDump()
         return colorDiagnostics()
+            + "\n\n=== unfiltered JSON from Google (no `fields` filter) ===\n" + dump
     }
 
     // MARK: - Queries used by the views

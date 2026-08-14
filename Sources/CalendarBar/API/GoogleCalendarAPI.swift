@@ -56,8 +56,10 @@ struct GoogleCalendarAPI {
             // colorRgbFormat=true is required for backgroundColor/foregroundColor to be
             // returned at all; without it the response carries only a palette colorId.
             var query = [URLQueryItem(name: "maxResults", value: "250"),
-                         URLQueryItem(name: "minAccessRole", value: "reader"),
-                         URLQueryItem(name: "colorRgbFormat", value: "true")]
+                         URLQueryItem(name: "colorRgbFormat", value: "true"),
+                         // Without showHidden, entries the user has hidden in the Google
+                         // Calendar list are omitted from the response entirely.
+                         URLQueryItem(name: "showHidden", value: "true")]
             if let pageToken { query.append(URLQueryItem(name: "pageToken", value: pageToken)) }
             let page: CalendarListResponse = try await get(path: "users/me/calendarList", query: query)
             entries.append(contentsOf: page.items ?? [])
@@ -96,7 +98,37 @@ struct GoogleCalendarAPI {
         return events
     }
 
-    private static let eventFields = "nextPageToken,items(id,iCalUID,status,summary,location,colorId,htmlLink,hangoutLink,transparency,start,end,conferenceData(entryPoints(entryPointType,uri)),attendees(email,responseStatus,self))"
+    /// Diagnostics: the same events query with **no** `fields` filter, returned verbatim.
+    /// Used to prove whether a missing property is Google's omission or our filter's fault.
+    func fetchRawEventsBody(calendarID: String, timeMin: Date, timeMax: Date) async throws -> Data {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        var components = URLComponents(url: AppConfig.calendarAPIBase, resolvingAgainstBaseURL: false)!
+        let base = AppConfig.calendarAPIBase.path
+        components.percentEncodedPath = (base.hasSuffix("/") ? base : base + "/")
+            + "calendars/\(Self.encodePathSegment(calendarID))/events"
+        components.queryItems = [
+            URLQueryItem(name: "timeMin", value: formatter.string(from: timeMin)),
+            URLQueryItem(name: "timeMax", value: formatter.string(from: timeMax)),
+            URLQueryItem(name: "singleEvents", value: "true"),
+            URLQueryItem(name: "orderBy", value: "startTime"),
+            URLQueryItem(name: "maxResults", value: "250")
+        ]
+        let token = try await tokenProvider(false)
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard status == 200 else {
+            let body = String(decoding: data.prefix(200), as: UTF8.self)
+            throw APIError.google(status: status, reason: "raw_dump_probe",
+                                  message: "HTTP \(status) at \(components.url?.absoluteString ?? "?"): \(body)")
+        }
+        return data
+    }
+
+    private static let eventFields = "nextPageToken,items(id,iCalUID,status,summary,location,colorId,htmlLink,hangoutLink,transparency,start,end,conferenceData(entryPoints(entryPointType,uri)),attendees(email,responseStatus,self),creator(self),organizer(self),eventType,eventLabelId)"
 
     // MARK: - Transport
 

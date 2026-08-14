@@ -17,6 +17,8 @@ struct CalendarListEntry: Decodable {
     let backgroundColor: String?
     let foregroundColor: String?
     let colorId: String?
+    let hidden: Bool?
+    let deleted: Bool?
 
     /// Include a calendar unless Google explicitly says it is hidden.
     ///
@@ -25,6 +27,7 @@ struct CalendarListEntry: Decodable {
     /// silently dropped most of the user's calendars, so only an explicit `false` excludes
     /// one now (the primary calendar is always included).
     var isVisible: Bool {
+        if deleted == true { return false }
         if primary == true { return true }
         return selected != false
     }
@@ -59,6 +62,11 @@ struct RawEvent: Decodable {
         let entryPoints: [EntryPoint]?
     }
 
+    /// Only the `self` flag is read; no email is ever surfaced in diagnostics.
+    struct Person: Decodable {
+        let `self`: Bool?
+    }
+
     struct Attendee: Decodable {
         let email: String?
         let responseStatus: String?
@@ -78,6 +86,13 @@ struct RawEvent: Decodable {
     let conferenceData: ConferenceData?
     let attendees: [Attendee]?
     let transparency: String?
+    let creator: Person?
+    let organizer: Person?
+    let eventType: String?
+    /// Undocumented field carrying the newer "event label" swatch (the ~23-color extended
+    /// picker in Google Calendar's UI), as opposed to the classic 11-value `colorId`. Google
+    /// gives no endpoint to resolve this UUID to a color; see `EventLabelColors`.
+    let eventLabelId: String?
 
     var videoLink: String? {
         if let hangoutLink { return hangoutLink }
