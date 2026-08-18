@@ -17,7 +17,7 @@ struct StoredTokens: Codable {
 
 /// Persists the OAuth token set in the macOS Keychain as a single generic-password item.
 enum KeychainStore {
-    private static let service = "com.nifra.calendarbar.google-oauth"
+    private static let service = "com.calendarbar.app.google-oauth"
     private static let account = "default"
 
     enum KeychainError: LocalizedError {

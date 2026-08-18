@@ -104,6 +104,34 @@ struct RawEvent: Decodable {
     }
 }
 
+// MARK: - Google Tasks v1 wire types
+
+struct TaskListsResponse: Decodable {
+    let items: [RawTaskList]?
+    let nextPageToken: String?
+}
+
+struct RawTaskList: Decodable {
+    let id: String
+    let title: String?
+}
+
+struct TasksResponse: Decodable {
+    let items: [RawTask]?
+    let nextPageToken: String?
+}
+
+struct RawTask: Decodable {
+    let id: String
+    let title: String?
+    let notes: String?
+    let status: String?
+    /// RFC 3339 timestamp but always midnight UTC — Google Tasks due dates carry no time
+    /// component regardless of what's sent, so only the date part is meaningful.
+    let due: String?
+    let completed: String?
+}
+
 // MARK: - View model
 
 struct CalEvent: Identifiable, Equatable {
@@ -140,6 +168,17 @@ struct CalEvent: Identifiable, Equatable {
         if startText == endText { return startText }
         return "\(startText) – \(endText)"
     }
+}
+
+struct CalTask: Identifiable, Equatable {
+    let id: String
+    let taskListID: String
+    let title: String
+    let notes: String?
+    /// Start-of-day; Google Tasks due dates have no time component.
+    let dueDay: Date?
+
+    var color: Color { Color(hex: Theme.taskHex) }
 }
 
 // MARK: - Date parsing

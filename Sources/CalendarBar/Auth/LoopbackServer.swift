@@ -27,7 +27,7 @@ final class LoopbackServer: @unchecked Sendable {
         }
     }
 
-    private let queue = DispatchQueue(label: "com.nifra.calendarbar.loopback")
+    private let queue = DispatchQueue(label: "com.calendarbar.app.loopback")
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     private var callbackContinuation: CheckedContinuation<[String: String], Error>?

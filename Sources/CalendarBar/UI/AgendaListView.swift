@@ -14,8 +14,11 @@ struct AgendaListView: View {
                         DaySectionHeader(day: day, store: store)
                             .id(day.timeIntervalSince1970)
 
-                        let events = store.events(on: day)
-                        if events.isEmpty {
+                        // Tasks render after this day's events (they carry a due date, not
+                        // a time, so there's no meaningful chronological interleave).
+                        let rows: [AgendaRow] = store.events(on: day).map(AgendaRow.event)
+                            + store.tasks(on: day).map(AgendaRow.task)
+                        if rows.isEmpty {
                             Text("No events scheduled")
                                 .font(Theme.placeholderFont)
                                 .foregroundStyle(Theme.primaryText.opacity(0.85))
@@ -23,9 +26,14 @@ struct AgendaListView: View {
                                 .padding(.vertical, 13)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
-                            ForEach(events) { event in
-                                EventRow(event: event, store: store)
-                                if event.id != events.last?.id {
+                            ForEach(rows) { row in
+                                switch row {
+                                case .event(let event):
+                                    EventRow(event: event, store: store)
+                                case .task(let task):
+                                    TaskRow(task: task, store: store)
+                                }
+                                if row.id != rows.last?.id {
                                     Divider()
                                         .overlay(Theme.separator)
                                         .padding(.leading, Theme.horizontalPadding)
@@ -43,6 +51,93 @@ struct AgendaListView: View {
             }
         }
         .background(Theme.popoverBackground)
+    }
+}
+
+// MARK: - Agenda row (event or task, mixed within a day's section)
+
+private enum AgendaRow: Identifiable {
+    case event(CalEvent)
+    case task(CalTask)
+
+    var id: String {
+        switch self {
+        case .event(let event): return "event-\(event.id)"
+        case .task(let task): return "task-\(task.id)"
+        }
+    }
+}
+
+/// A single Google Task row. Tasks have no per-item color in Google's own API, so every
+/// row uses one fixed accent (Theme.taskHex) to read as a distinct category from events.
+private struct TaskRow: View {
+    let task: CalTask
+    @ObservedObject var store: CalendarStore
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            // Same colored left bar as EventRow, but fixed to one hue (Theme.taskHex) so
+            // tasks read as their own category at a glance rather than blending into
+            // whichever event color happens to be adjacent.
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(Color(hex: Theme.taskHex))
+                .frame(width: 3)
+                .frame(minHeight: 32)
+
+            Button {
+                store.completeTask(task)
+            } label: {
+                Image(systemName: isCompleting ? "circle.dotted" : "circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color(hex: Theme.taskHex))
+            }
+            .buttonStyle(.plain)
+            .disabled(isCompleting)
+            .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(task.title)
+                    .font(Theme.eventTitleFont)
+                    .foregroundStyle(Theme.primaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                if dueText != nil || task.notes != nil {
+                    HStack(spacing: 5) {
+                        if let dueText {
+                            Text(dueText)
+                        }
+                        if let notes = task.notes {
+                            if dueText != nil { Text("•") }
+                            Text(notes).lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                    .font(Theme.eventDetailFont)
+                    .foregroundStyle(Theme.secondaryText)
+                }
+            }
+
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, Theme.horizontalPadding)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isHovering ? Theme.hoverFill : Color.clear)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .opacity(isCompleting ? 0.5 : 1)
+    }
+
+    private var isCompleting: Bool { store.completingTaskIDs.contains(task.id) }
+
+    private var dueText: String? {
+        guard let due = task.dueDay else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        let overdue = due < store.today
+        return (overdue ? "Overdue • " : "Due ") + formatter.string(from: due)
     }
 }
 

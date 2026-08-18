@@ -50,8 +50,13 @@ enum AppConfig {
     static let scopes = [
         "openid",
         "email",
-        "https://www.googleapis.com/auth/calendar.readonly"
+        "https://www.googleapis.com/auth/calendar.readonly",
+        // Read/write is required to mark a task complete; there is no readonly Tasks scope
+        // that also allows updates.
+        "https://www.googleapis.com/auth/tasks"
     ]
+
+    static let tasksAPIBase = URL(string: "https://tasks.googleapis.com/tasks/v1/")!
 
     /// How often the background timer re-syncs.
     static let refreshInterval: TimeInterval = 10 * 60

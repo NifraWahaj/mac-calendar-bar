@@ -17,6 +17,14 @@ final class CalendarStore: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastUpdated: Date?
 
+    /// Incomplete tasks across every task list, sorted with due tasks first (earliest due
+    /// first), then undated tasks. Completed tasks are excluded at fetch time (see
+    /// GoogleTasksAPI.fetchTasks), so this list is exactly what still needs doing.
+    @Published private(set) var tasks: [CalTask] = []
+    /// Task ids currently being marked complete, so their row can show a spinner and
+    /// resist double-taps until the server confirms.
+    @Published private(set) var completingTaskIDs: Set<String> = []
+
     // Navigation
     /// The day the agenda starts from (defaults to today).
     @Published var anchorDate: Date
@@ -41,6 +49,7 @@ final class CalendarStore: ObservableObject {
     }()
 
     private var api: GoogleCalendarAPI!
+    private var tasksAPI: GoogleTasksAPI!
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
@@ -61,6 +70,9 @@ final class CalendarStore: ObservableObject {
         anchorDate = today
         visibleMonth = Calendar.current.dateInterval(of: .month, for: today)?.start ?? today
         api = GoogleCalendarAPI(tokenProvider: { [auth] force in
+            try await auth.accessToken(forceRefresh: force)
+        })
+        tasksAPI = GoogleTasksAPI(tokenProvider: { [auth] force in
             try await auth.accessToken(forceRefresh: force)
         })
 
@@ -214,6 +226,15 @@ final class CalendarStore: ObservableObject {
             errorMessage = failures.isEmpty
                 ? nil
                 : "Some calendars did not load: \(failures[0].localizedDescription)"
+
+            // Tasks failing must not blank out events that already loaded successfully;
+            // this is a distinct Google API with its own auth scope and its own outage
+            // surface, so it's kept independent of the calendar error above.
+            do {
+                tasks = try await fetchAllTasks()
+            } catch {
+                tasks = []
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -228,6 +249,70 @@ final class CalendarStore: ObservableObject {
         let min = calendar.date(byAdding: .day, value: -35, to: today) ?? today
         let max = calendar.date(byAdding: .day, value: 70, to: today) ?? today
         return (min, max)
+    }
+
+    // MARK: - Tasks
+
+    private func fetchAllTasks() async throws -> [CalTask] {
+        let lists = try await tasksAPI.fetchTaskLists()
+        var collected: [CalTask] = []
+        for list in lists {
+            let raw = try await tasksAPI.fetchTasks(taskListID: list.id)
+            collected.append(contentsOf: raw.compactMap { convert($0, taskListID: list.id) })
+        }
+        // Due tasks first (earliest first), undated tasks after, alphabetical within each.
+        collected.sort { lhs, rhs in
+            switch (lhs.dueDay, rhs.dueDay) {
+            case (let l?, let r?): return l == r
+                ? lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                : l < r
+            case (nil, nil): return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            case (nil, _): return false
+            case (_, nil): return true
+            }
+        }
+        return collected
+    }
+
+    private func convert(_ raw: RawTask, taskListID: String) -> CalTask? {
+        guard raw.status != "completed" else { return nil }
+        let title = raw.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dueDay: Date?
+        if let due = raw.due {
+            // Google sends fractional seconds here ("2026-08-16T00:00:00.000Z"), which
+            // GoogleDateParser.parse already falls back to withFractionalSeconds for.
+            let timestamp = RawEvent.Timestamp(date: nil, dateTime: due, timeZone: nil)
+            if let parsed = GoogleDateParser.parse(timestamp, timeZone: calendar.timeZone) {
+                dueDay = calendar.startOfDay(for: parsed.date)
+            }
+        }
+        return CalTask(
+            id: raw.id,
+            taskListID: taskListID,
+            title: (title?.isEmpty == false) ? title! : "(No title)",
+            notes: raw.notes?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            dueDay: dueDay
+        )
+    }
+
+    /// Marks a task complete. Optimistically removes it from the list (Google Tasks has no
+    /// "still visible but done" state in this view — see GoogleTasksAPI.fetchTasks), and
+    /// restores it on failure so the row doesn't just silently vanish for good.
+    func completeTask(_ task: CalTask) {
+        guard !completingTaskIDs.contains(task.id) else { return }
+        completingTaskIDs.insert(task.id)
+        let previous = tasks
+        tasks.removeAll { $0.id == task.id }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.tasksAPI.completeTask(taskListID: task.taskListID, taskID: task.id)
+            } catch {
+                self.tasks = previous
+                self.errorMessage = "Could not complete \"\(task.title)\": \(error.localizedDescription)"
+            }
+            self.completingTaskIDs.remove(task.id)
+        }
     }
 
     private func convert(_ raw: RawEvent, calendarID: String) -> CalEvent? {
@@ -366,8 +451,39 @@ final class CalendarStore: ObservableObject {
         await performRefresh()
         if let error = errorMessage { return "error: \(error)" }
         let dump = await rawEventDump()
+        let taskReport = await tasksDiagnostics()
         return colorDiagnostics()
             + "\n\n=== unfiltered JSON from Google (no `fields` filter) ===\n" + dump
+            + "\n\n=== tasks ===\n" + taskReport
+    }
+
+    private func tasksDiagnostics() async -> String {
+        var lines: [String] = []
+        do {
+            let lists = try await tasksAPI.fetchTaskLists()
+            lines.append("task lists: \(lists.count)")
+            for list in lists {
+                lines.append("  list \"\(list.title ?? "?")\" id=\(list.id)")
+                do {
+                    let raw = try await tasksAPI.fetchTasks(taskListID: list.id)
+                    lines.append("    tasks fetched (showCompleted=false): \(raw.count)")
+                    for t in raw {
+                        lines.append("    - id=\(t.id) title=\(t.title ?? "?")"
+                            + " status=\(t.status ?? "?") due=\(t.due ?? "absent")"
+                            + " completed=\(t.completed ?? "absent")")
+                    }
+                } catch {
+                    lines.append("    fetchTasks FAILED: \(error)")
+                }
+            }
+        } catch {
+            lines.append("fetchTaskLists FAILED: \(error)")
+        }
+        lines.append("store.tasks after refresh: \(tasks.count)")
+        for t in tasks {
+            lines.append("  \(t.title) dueDay=\(t.dueDay?.description ?? "nil")")
+        }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Queries used by the views
@@ -376,6 +492,19 @@ final class CalendarStore: ObservableObject {
 
     func events(on day: Date) -> [CalEvent] {
         events.filter { $0.occurs(on: day, calendar: calendar) }
+    }
+
+    /// Tasks to show inside a given day's agenda section. Today's section also absorbs
+    /// overdue tasks (due date already passed, so their actual day is never shown in the
+    /// forward-looking agenda) and undated tasks (Google Tasks allows no due date at all),
+    /// so nothing silently disappears from the popover.
+    func tasks(on day: Date) -> [CalTask] {
+        let dayStart = calendar.startOfDay(for: day)
+        let isToday = calendar.isDate(dayStart, inSameDayAs: today)
+        return tasks.filter { task in
+            guard let due = task.dueDay else { return isToday }
+            return isToday ? due <= dayStart : calendar.isDate(due, inSameDayAs: dayStart)
+        }
     }
 
     /// Backed by a precomputed index: the grid asks this for up to 42 cells per render.
@@ -561,6 +690,14 @@ private extension CalendarStore {
                      isAllDay: false, location: "Dr. Ahmed's clinic",
                      videoLink: nil, htmlLink: nil,
                      colorHex: "E67C73", calendarName: "Personal", isDeclined: false)
+        ]
+        tasks = [
+            CalTask(id: "t1", taskListID: "demo", title: "Send meeting notes",
+                    notes: nil, dueDay: calendar.date(byAdding: .day, value: 0, to: today)),
+            CalTask(id: "t2", taskListID: "demo", title: "Renew passport",
+                    notes: "Appointment booked for next month", dueDay: nil),
+            CalTask(id: "t3", taskListID: "demo", title: "Follow up with vendor",
+                    notes: nil, dueDay: calendar.date(byAdding: .day, value: -2, to: today))
         ]
         lastUpdated = Date()
     }

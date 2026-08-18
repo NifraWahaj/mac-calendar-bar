@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.nifra.calendarbar</string>
+	<string>com.calendarbar.app</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Applications/Calendar Bar.app/Contents/MacOS/CalendarBar</string>
