@@ -69,7 +69,9 @@ private enum AgendaRow: Identifiable {
 }
 
 /// A single Google Task row. Tasks have no per-item color in Google's own API, so every
-/// row uses one fixed accent (Theme.taskHex) to read as a distinct category from events.
+/// row shows the color the user picked for it in Google Calendar where that exists, and
+/// falls back to one fixed accent (Theme.taskHex) for tasks that have no color anywhere in
+/// Google's APIs. The checkbox keeps tasks distinguishable from events either way.
 private struct TaskRow: View {
     let task: CalTask
     @ObservedObject var store: CalendarStore
@@ -77,11 +79,9 @@ private struct TaskRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            // Same colored left bar as EventRow, but fixed to one hue (Theme.taskHex) so
-            // tasks read as their own category at a glance rather than blending into
-            // whichever event color happens to be adjacent.
+            // Same colored left bar as EventRow.
             RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(Color(hex: Theme.taskHex))
+                .fill(task.color)
                 .frame(width: 3)
                 .frame(minHeight: 32)
 
@@ -90,7 +90,7 @@ private struct TaskRow: View {
             } label: {
                 Image(systemName: isCompleting ? "circle.dotted" : "circle")
                     .font(.system(size: 15))
-                    .foregroundStyle(Color(hex: Theme.taskHex))
+                    .foregroundStyle(task.color)
             }
             .buttonStyle(.plain)
             .disabled(isCompleting)

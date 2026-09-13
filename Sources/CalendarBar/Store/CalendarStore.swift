@@ -97,8 +97,9 @@ final class CalendarStore: ObservableObject {
     func start() {
         if isDemoMode { loadDemoEvents() }
         // A Keychain read that failed (rather than finding nothing) must be explained
-        // instead of silently showing the sign-in panel.
-        if let warning = auth.keychainWarning { errorMessage = warning }
+        // instead of silently showing the sign-in panel. Demo mode never signs in, so a
+        // Keychain complaint there is noise — and would otherwise land in preview renders.
+        if let warning = auth.keychainWarning, !isDemoMode { errorMessage = warning }
         if auth.isSignedIn { refresh() }
         scheduleTimer()
 
@@ -181,6 +182,17 @@ final class CalendarStore: ObservableObject {
                 calendarNames[entry.id] = entry.summary ?? entry.id
             }
 
+            // Tasks are fetched before events so that conversion can recognise the
+            // calendar-side mirror of a scheduled task and fold the two together. A Tasks
+            // failure must not blank out events: it is a distinct API with its own scope
+            // and its own outage surface, so it only costs the reconciliation.
+            do {
+                tasks = try await fetchAllTasks()
+            } catch {
+                tasks = []
+            }
+            scheduledTaskColors = [:]
+
             // Fetch each visible calendar concurrently. One calendar failing (revoked
             // access, deleted subscription) must not discard the calendars that worked.
             var collected: [CalEvent] = []
@@ -222,19 +234,11 @@ final class CalendarStore: ObservableObject {
             }
 
             events = collected
+            applyScheduledTaskColors()
             lastUpdated = Date()
             errorMessage = failures.isEmpty
                 ? nil
                 : "Some calendars did not load: \(failures[0].localizedDescription)"
-
-            // Tasks failing must not blank out events that already loaded successfully;
-            // this is a distinct Google API with its own auth scope and its own outage
-            // surface, so it's kept independent of the calendar error above.
-            do {
-                tasks = try await fetchAllTasks()
-            } catch {
-                tasks = []
-            }
         } catch is CancellationError {
             return
         } catch {
@@ -252,6 +256,41 @@ final class CalendarStore: ObservableObject {
     }
 
     // MARK: - Tasks
+
+    /// Colors harvested from the calendar-side mirror of a scheduled task, keyed by task id.
+    private var scheduledTaskColors: [String: String] = [:]
+
+    /// Google mirrors a task that was given a time slot in Google Calendar into the calendar
+    /// itself as a `focusTime` event: same title, same day, written in the same instant as
+    /// the task. Nothing in either API links the two — the task's `links` array is empty and
+    /// the event carries no `extendedProperties` — so they are matched on title and day.
+    ///
+    /// The match is deliberately narrow. Only `focusTime`/`task` events qualify (a normal
+    /// event is never a task mirror), and only when a task with that title is due that day,
+    /// so an ordinary event is never hidden just for sharing a name with a task. The cost of
+    /// a false positive is a genuine Focus Time block being folded into an identically named
+    /// task due the same day, which is rare and preferable to showing every task twice.
+    private func matchingTask(title: String?, day: Date, eventType: String?) -> CalTask? {
+        guard eventType == "focusTime" || eventType == "task" else { return nil }
+        guard let needle = title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        else { return nil }
+        return tasks.first { task in
+            guard let due = task.dueDay, calendar.isDate(due, inSameDayAs: day) else { return false }
+            return task.title.compare(needle, options: [.caseInsensitive, .diacriticInsensitive])
+                == .orderedSame
+        }
+    }
+
+    /// Moves the colors harvested during conversion onto the tasks themselves.
+    private func applyScheduledTaskColors() {
+        guard !scheduledTaskColors.isEmpty else { return }
+        tasks = tasks.map { task in
+            guard let hex = scheduledTaskColors[task.id] else { return task }
+            var colored = task
+            colored.colorHex = hex
+            return colored
+        }
+    }
 
     private func fetchAllTasks() async throws -> [CalTask] {
         let lists = try await tasksAPI.fetchTaskLists()
@@ -362,6 +401,17 @@ final class CalendarStore: ObservableObject {
                 + " allDay=\(isAllDay ? "y" : "n")"
                 + " cal=\(calendarNames[calendarID] ?? "?")"
                 + " | \(title)")
+        }
+
+        // A scheduled task arrives twice: once here as its calendar mirror, once from the
+        // Tasks API. Keep the task (it can be completed and carries the due date) and give
+        // it this event's color, which is the only place the user's color choice survives.
+        if let task = matchingTask(title: raw.summary, day: start, eventType: raw.eventType) {
+            scheduledTaskColors[task.id] = hex
+            if isDiagnosing {
+                eventDebugRows.append("      ^ folded into task \"\(task.title)\" (color \(hex))")
+            }
+            return nil
         }
 
         let identifier = raw.id ?? raw.iCalUID ?? UUID().uuidString
@@ -475,13 +525,20 @@ final class CalendarStore: ObservableObject {
                 } catch {
                     lines.append("    fetchTasks FAILED: \(error)")
                 }
+                if let raw = try? await tasksAPI.fetchRawTasksBody(taskListID: list.id),
+                   let pretty = try? JSONSerialization.jsonObject(with: raw),
+                   let data = try? JSONSerialization.data(withJSONObject: pretty,
+                                                          options: [.prettyPrinted, .sortedKeys]) {
+                    lines.append("    raw JSON: " + String(decoding: data, as: UTF8.self))
+                }
             }
         } catch {
             lines.append("fetchTaskLists FAILED: \(error)")
         }
         lines.append("store.tasks after refresh: \(tasks.count)")
         for t in tasks {
-            lines.append("  \(t.title) dueDay=\(t.dueDay?.description ?? "nil")")
+            lines.append("  \(t.title) dueDay=\(t.dueDay?.description ?? "nil")"
+                + " color=\(t.colorHex)\(t.colorHex == Theme.taskHex ? " (default)" : " (from calendar mirror)")")
         }
         return lines.joined(separator: "\n")
     }

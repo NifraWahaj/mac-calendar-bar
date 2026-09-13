@@ -43,6 +43,30 @@ struct GoogleTasksAPI {
         return tasks
     }
 
+    /// Diagnostics: every field Google returns for a task list's tasks, verbatim.
+    func fetchRawTasksBody(taskListID: String) async throws -> Data {
+        var components = URLComponents(url: AppConfig.tasksAPIBase, resolvingAgainstBaseURL: false)!
+        let base = AppConfig.tasksAPIBase.path
+        components.percentEncodedPath = (base.hasSuffix("/") ? base : base + "/")
+            + "lists/\(GoogleCalendarAPI.encodePathSegment(taskListID))/tasks"
+        components.queryItems = [
+            URLQueryItem(name: "maxResults", value: "100"),
+            URLQueryItem(name: "showCompleted", value: "false")
+        ]
+        let token = try await tokenProvider(false)
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard status == 200 else {
+            throw GoogleCalendarAPI.APIError.google(
+                status: status, reason: "raw_task_probe",
+                message: String(decoding: data.prefix(200), as: UTF8.self))
+        }
+        return data
+    }
+
     /// Marks a task completed. Google clears `needsAction` tasks off the default view once
     /// completed, so no explicit "uncomplete" affordance is offered in the popover.
     func completeTask(taskListID: String, taskID: String) async throws {

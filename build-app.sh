@@ -29,6 +29,10 @@ DIST="dist"
 APP="$DIST/$APP_NAME.app"
 
 DEPLOY_TARGET="13.0"
+# Package.swift is swift-tools-version:5.9, so SwiftPM compiles in Swift 5 language mode.
+# The direct-swiftc path below must match it or main.swift's top-level code and the
+# `nonisolated override init()` in AppDelegate stop compiling.
+SWIFT_LANG_VERSION="5"
 
 # SwiftPM's own `--arch arm64 --arch x86_64` needs xcbuild from a full Xcode install.
 # When only the Command Line Tools are present we build each slice and lipo them together.
@@ -37,6 +41,52 @@ has_full_xcode() {
   dir="$(xcode-select -p 2>/dev/null || true)"
   [ -x "$dir/../SharedFrameworks/XCBuild.framework/Versions/A/Support/xcbuild" ] \
     || [ -x "/Library/Developer/SharedFrameworks/XCBuild.framework/Versions/A/Support/xcbuild" ]
+}
+
+# A partially-updated Command Line Tools install can ship an SDK newer than the bundled
+# compiler can parse (the default SDK then fails on the stdlib's own .swiftinterface), and
+# can leave SwiftPM's binaries linked against a stale framework. Both are worked around:
+# the SDK is probed for one the compiler accepts, and the build falls back to invoking
+# swiftc directly — this target is a single module with no external dependencies.
+probe_sdk() {
+  local sdk="$1" tmp status
+  tmp="$(mktemp -d)"
+  printf 'print(1)\n' > "$tmp/probe.swift"
+  swiftc -sdk "$sdk" -target "$(uname -m)-apple-macos${DEPLOY_TARGET}" \
+    -swift-version "$SWIFT_LANG_VERSION" -o "$tmp/probe" "$tmp/probe.swift" >/dev/null 2>&1
+  status=$?
+  rm -rf "$tmp"
+  return $status
+}
+
+pick_sdk() {
+  local sdk_dir candidate
+  sdk_dir="$(xcode-select -p 2>/dev/null)/SDKs"
+  for candidate in "$(xcrun --show-sdk-path 2>/dev/null || true)" \
+                   "$sdk_dir/MacOSX.sdk" \
+                   $(ls -d "$sdk_dir"/MacOSX*.sdk 2>/dev/null | sort -rV); do
+    [ -n "$candidate" ] && [ -d "$candidate" ] || continue
+    if probe_sdk "$candidate"; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+# True only when SwiftPM can actually load the manifest; a broken install aborts here.
+# Run in a subshell so the shell's own "Abort trap" notice can be redirected too.
+swiftpm_works() {
+  ( swift build -c release --show-bin-path >/dev/null 2>&1 ) 2>/dev/null
+}
+
+swiftc_slice() {
+  local arch="$1" out="$2" mode="$3"
+  mkdir -p "$out"
+  local opts=(-O -wmo)
+  [ "$mode" = "debug" ] && opts=(-Onone -g)
+  # shellcheck disable=SC2046
+  swiftc -sdk "$SDK" -target "${arch}-apple-macos${DEPLOY_TARGET}" \
+    -swift-version "$SWIFT_LANG_VERSION" "${opts[@]}" \
+    -o "$out/$EXECUTABLE" $(find Sources/CalendarBar -name '*.swift' | sort) >&2
+  echo "$out/$EXECUTABLE"
 }
 
 build_slice() {
@@ -48,17 +98,35 @@ build_slice() {
 }
 
 echo "==> Building ($CONFIG)"
+if swiftpm_works; then
+  USE_SPM=1
+else
+  USE_SPM=0
+  SDK="$(pick_sdk)" || { echo "    !! no macOS SDK this compiler can use; reinstall the Command Line Tools"; exit 1; }
+  echo "    SwiftPM unavailable (broken toolchain install); compiling with swiftc directly"
+  echo "    SDK: $SDK"
+fi
+
 if [ "$CONFIG" = "debug" ]; then
-  swift build -c debug
-  BIN="$(swift build -c debug --show-bin-path)/$EXECUTABLE"
-elif has_full_xcode; then
+  if [ "$USE_SPM" = "1" ]; then
+    swift build -c debug
+    BIN="$(swift build -c debug --show-bin-path)/$EXECUTABLE"
+  else
+    BIN="$(swiftc_slice "$(uname -m)" ".build/direct/debug" debug)"
+  fi
+elif [ "$USE_SPM" = "1" ] && has_full_xcode; then
   echo "    using Xcode toolchain for a universal build"
   swift build -c release --arch arm64 --arch x86_64
   BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/$EXECUTABLE"
 else
-  echo "    Command Line Tools only: building arm64 + x86_64 slices separately"
-  ARM_BIN="$(build_slice arm64)/$EXECUTABLE"
-  X86_BIN="$(build_slice x86_64)/$EXECUTABLE"
+  echo "    building arm64 + x86_64 slices separately"
+  if [ "$USE_SPM" = "1" ]; then
+    ARM_BIN="$(build_slice arm64)/$EXECUTABLE"
+    X86_BIN="$(build_slice x86_64)/$EXECUTABLE"
+  else
+    ARM_BIN="$(swiftc_slice arm64 ".build/direct/arm64" release)"
+    X86_BIN="$(swiftc_slice x86_64 ".build/direct/x86_64" release)"
+  fi
   mkdir -p .build/universal
   BIN=".build/universal/$EXECUTABLE"
   lipo -create -output "$BIN" "$ARM_BIN" "$X86_BIN"
