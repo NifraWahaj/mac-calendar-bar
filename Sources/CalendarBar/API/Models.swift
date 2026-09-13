@@ -177,8 +177,13 @@ struct CalTask: Identifiable, Equatable {
     let notes: String?
     /// Start-of-day; Google Tasks due dates have no time component.
     let dueDay: Date?
+    /// The Tasks API has no color field. A task given a time slot in Google Calendar is
+    /// mirrored there as a `focusTime` event which *does* carry the color the user picked,
+    /// so CalendarStore copies it across during refresh (see `matchingTask`).
+    /// Tasks with no time slot have no color anywhere in Google's APIs and keep this default.
+    var colorHex: String = Theme.taskHex
 
-    var color: Color { Color(hex: Theme.taskHex) }
+    var color: Color { Color(hex: colorHex) }
 }
 
 // MARK: - Date parsing

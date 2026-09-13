@@ -10,7 +10,8 @@ per-event custom colors are preserved exactly as you set them in Google Calendar
 - Agent app (`LSUIElement`): menu bar only, no Dock icon, no app menu
 - Collapsible month/week grid, accent-colored "today" badge, week/month navigation arrows
 - Seven-day agenda, grouped by day: `Today • Thursday • August 13`, `Tomorrow`, …
-- Google Tasks shown inside their due day, with a checkbox to mark complete inline
+- Google Tasks shown inside their due day, with a checkbox to mark complete inline; a task
+  scheduled in Google Calendar appears once, in the color you gave it
 - Per-event colors matched to Google Calendar's palette, including the newer extended
   swatches and birthday events (see [Colors](#colors))
 - Nine switchable accent palettes plus light/dark override, from the **…** menu
@@ -151,8 +152,12 @@ you see there. Three sources feed into this:
 - **Birthdays** (`eventType: "birthday"`) — Google sends no color for these at all; the app
   approximates its own client's fixed green.
 
-**Tasks always render in one fixed color** (`Theme.taskHex`), since Google Tasks has no
-per-item color of its own.
+**Tasks** have no color field in the Tasks API at all. A task given a *time slot* in Google
+Calendar is mirrored there as a `focusTime` event that does carry the color you picked, so
+that color is folded onto the task and the duplicate row dropped (see `matchingTask` in
+[`Store/CalendarStore.swift`](Sources/CalendarBar/Store/CalendarStore.swift)).
+Tasks with only a due date have no color anywhere in Google's APIs and fall back to
+`Theme.taskHex`.
 
 ## How it works
 

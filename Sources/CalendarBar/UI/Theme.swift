@@ -25,9 +25,11 @@ enum Theme {
     /// with Google's UI, not a value read from the API.
     static let birthdayHex = "0B8043"
 
-    /// Fixed color for every Google Tasks item, deliberately outside the event color
-    /// palette (classic + extended + birthday) so tasks are visually distinct from events
-    /// at a glance without needing per-task coloring, which Google Tasks doesn't support.
+    /// Fallback color for Google Tasks items, deliberately outside the event color palette
+    /// (classic + extended + birthday) so tasks stay visually distinct at a glance. Used
+    /// for tasks with no color anywhere in Google's APIs — the Tasks API has no color
+    /// field, so only tasks given a time slot in Google Calendar carry one, via the
+    /// calendar-side mirror CalendarStore folds into them.
     static let taskHex = "8ACE00"
 
     static let popoverBackground = dynamic(light: .white, dark: NSColor(hex: "1E1E1E"))
